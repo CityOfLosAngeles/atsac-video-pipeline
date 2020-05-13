@@ -2,16 +2,14 @@
 Pipeline for tranferring ATSAC videos to the cloud and processing them.
 """
 import os
-import shutil
 import sys
 
 import fsspec
-
 import streamz
 import tornado
 
 
-def check_manifest(x: str, manifest: str) -> bool:
+def check_manifest(of: fsspec.core.OpenFile, manifest: str) -> bool:
     """
     Check to see if a given string exists in a manifest file.
 
@@ -29,16 +27,16 @@ def check_manifest(x: str, manifest: str) -> bool:
     True if the file is *not* in the manifest, False if it is.
     """
     # Check if the file actually exists. If not, return true.
-    of = fsspec.open(manifest, "r")
-    if not of.fs.exists(manifest):
+    mf = fsspec.open(manifest, "r")
+    if not mf.fs.exists(manifest):
         return True
     # If the file exists, check if the file exists in it.
-    with of as f:
+    with mf as f:
         content = set(f.read().split("\n"))
-        return x not in content
+        return of.path not in content
 
 
-def add_to_manifest(x: str, manifest: str) -> None:
+def add_to_manifest(of: fsspec.core.OpenFile, manifest: str) -> None:
     """
     Add a string to a manifest file.
 
@@ -52,19 +50,19 @@ def add_to_manifest(x: str, manifest: str) -> None:
     """
     # If the manifest exists, load it. Otherwise, create a new set seeded
     # with the "x" string.
-    of = fsspec.open(manifest, "r")
-    if not of.fs.exists(manifest):
-        content = set([x])
+    mf = fsspec.open(manifest, "r")
+    if not mf.fs.exists(manifest):
+        content = set([of.path])
     else:
         with fsspec.open(manifest, "r") as infile:
             content = set(infile.read().split("\n"))
-            content.add(x)
+            content.add(of.path)
     # Write to the manifest.
     with fsspec.open(manifest, "w") as outfile:
         outfile.write("\n".join(sorted(list(content))))
 
 
-def process(path: str, manifest: str) -> None:
+def process(of: fsspec.core.OpenFile, manifest: str) -> None:
     """
     Process a file. Once it is done, marks the file in the manifest and deletes it.
 
@@ -77,12 +75,24 @@ def process(path: str, manifest: str) -> None:
     manifest: str
         The path to a manifest to mark the file has having been processed.
     """
-    print(f"Processing {path}")
-    add_to_manifest(path, manifest)
+    print(f"Processing {of.path}")
+
+    # Download the data locally
+    local = os.path.join("/tmp", os.path.basename(of.path))
+    of.fs.get(of.path, local)
+
+    # SUBPROCESS HERE
+
+    # Mark as processed
+    add_to_manifest(of, manifest)
+
+    # Remove data
+    os.remove(local)
+    of.fs.rm(of.path)
     return
 
 
-def upload(src: str, dst: str, manifest: str) -> None:
+def upload(of: fsspec.core.OpenFile, dst: str, manifest: str) -> None:
     """
     Upload a file to a destination path so it can be picked up for processing.
     Once it is done, marks it in the manifest.
@@ -99,9 +109,15 @@ def upload(src: str, dst: str, manifest: str) -> None:
     manifest: str
         A path to a manifest to flag the file as having been uploaded.
     """
-    print(f"Uploading {src}")
-    shutil.copyfile(src, os.path.join(dst, os.path.basename(src)))
-    add_to_manifest(src, manifest)
+    print(f"Uploading {of.path}")
+    # Download the data locally
+    name = os.path.basename(of.path)
+    local = os.path.join("/tmp", name)
+    of.fs.get(of.path, local)
+
+    target = fsspec.open(dst, "wb")
+    target.fs.upload(local, os.path.join(dst, name))
+    add_to_manifest(of, manifest)
     return
 
 
@@ -160,11 +176,11 @@ class PathsSource(streamz.Source):
         Poll the abstract file system.
         """
         while True:
-            filenames = set(fs.glob(self.glob))
+            filenames = set(fs.glob(self.glob, refresh=True))
             new = filenames - self.seen
             for fn in sorted(new):
                 self.seen.add(fn)
-                yield self._emit(fn)
+                yield self._emit(self.fs.open(fn, "rb"))
             yield tornado.gen.sleep(self.poll_interval)  # TODO: remove poll if delayed
             if self.stopped:
                 break
@@ -175,18 +191,21 @@ if __name__ == "__main__":
         print("Incorrect arguments")
         exit()
 
+    bucket = "s3://tmf-video-data/test"
     if sys.argv[1] == "upload":
-        fs = fsspec.filesystem("file")
-        paths = PathsSource(fs, os.path.join(os.getcwd(), "atsac/*.csv"))
-        paths.filter(lambda x: check_manifest(x, "uploaded.txt")).sink(
-            lambda x: upload(x, os.path.join(os.getcwd(), "cloud"), "uploaded.txt")
+        fs = fsspec.filesystem("file", use_listings_cache=False)
+        manifest = os.path.join(bucket, "uploaded.txt")
+        paths = PathsSource(fs, "./videos/*.asf")
+        paths.filter(lambda x: check_manifest(x, manifest)).sink(
+            lambda x: upload(x, bucket, manifest)
         )
         paths.start()
     elif sys.argv[1] == "process":
-        fs = fsspec.filesystem("file")
-        paths = PathsSource(fs, os.path.join(os.getcwd(), "cloud/*.csv"))
-        paths.filter(lambda x: check_manifest(x, "processed.txt")).sink(
-            lambda x: process(x, "processed.txt")
+        fs = fsspec.filesystem("s3")
+        paths = PathsSource(fs, "s3://tmf-video-data/test/*.asf")
+        manifest = os.path.join(bucket, "processed.txt")
+        paths.filter(lambda x: check_manifest(x, manifest)).sink(
+            lambda x: process(x, manifest)
         )
         paths.start()
 
