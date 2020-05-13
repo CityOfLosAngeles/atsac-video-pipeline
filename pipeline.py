@@ -202,7 +202,7 @@ class PathsSource(streamz.Source):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
+    if len(sys.argv) < 2:
         print("Incorrect arguments")
         exit()
 
@@ -210,7 +210,7 @@ if __name__ == "__main__":
     if sys.argv[1] == "upload":
         fs = fsspec.filesystem("file", use_listings_cache=False)
         manifest = os.path.join(bucket, "uploaded.txt")
-        paths = PathsSource(fs, "./videos/*.asf")
+        paths = PathsSource(fs, sys.argv[2])
         paths.filter(lambda x: check_manifest(x, manifest)).sink(
             lambda x: upload(x, bucket, manifest)
         )
