@@ -2,6 +2,7 @@
 Pipeline for tranferring ATSAC videos to the cloud and processing them.
 """
 import os
+import subprocess
 import sys
 
 import fsspec
@@ -75,20 +76,33 @@ def process(of: fsspec.core.OpenFile, manifest: str) -> None:
     manifest: str
         The path to a manifest to mark the file has having been processed.
     """
-    print(f"Processing {of.path}")
+    print(f"Processing {of.path}...", end="", flush=True)
 
     # Download the data locally
     local = os.path.join("/tmp", os.path.basename(of.path))
     of.fs.get(of.path, local)
 
-    # SUBPROCESS HERE
+    # Run the walk/bike algorithm
+    process = subprocess.run(
+        ["automated-walk-bike-counter", "--config=config.ini", f"--file_name={local}"],
+        capture_output=True,
+        check=False,
+    )
 
     # Mark as processed
     add_to_manifest(of, manifest)
 
+    # Upload log and CSV to remote filesystem
+    csvfile = os.path.splitext(local)[0] + ".csv"
+    with of.fs.open(os.path.splitext(of.path)[0] + ".log", "wb") as out:
+        out.write(process.stdout)
+    of.fs.upload(csvfile, os.path.splitext(of.path)[0] + ".csv")
+
     # Remove data
     os.remove(local)
+    os.remove(csvfile)
     of.fs.rm(of.path)
+    print(f"done")
     return
 
 
@@ -109,7 +123,7 @@ def upload(of: fsspec.core.OpenFile, dst: str, manifest: str) -> None:
     manifest: str
         A path to a manifest to flag the file as having been uploaded.
     """
-    print(f"Uploading {of.path}")
+    print(f"Uploading {of.path}...", end="", flush=True)
     # Download the data locally
     name = os.path.basename(of.path)
     local = os.path.join("/tmp", name)
@@ -118,6 +132,7 @@ def upload(of: fsspec.core.OpenFile, dst: str, manifest: str) -> None:
     target = fsspec.open(dst, "wb")
     target.fs.upload(local, os.path.join(dst, name))
     add_to_manifest(of, manifest)
+    print(f"done")
     return
 
 
