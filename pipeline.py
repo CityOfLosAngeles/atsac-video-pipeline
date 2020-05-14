@@ -1,9 +1,9 @@
 """
 Pipeline for tranferring ATSAC videos to the cloud and processing them.
 """
+import argparse
 import os
 import subprocess
-import sys
 
 import fsspec
 import streamz
@@ -191,7 +191,7 @@ class PathsSource(streamz.Source):
         Poll the abstract file system.
         """
         while True:
-            filenames = set(fs.glob(self.glob, refresh=True))
+            filenames = set(self.fs.glob(self.glob, refresh=True))
             new = filenames - self.seen
             for fn in sorted(new):
                 self.seen.add(fn)
@@ -201,27 +201,56 @@ class PathsSource(streamz.Source):
                 break
 
 
-if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Incorrect arguments")
-        exit()
-
-    bucket = "s3://tmf-video-data/test"
-    if sys.argv[1] == "upload":
-        fs = fsspec.filesystem("file", use_listings_cache=False)
-        manifest = os.path.join(bucket, "uploaded.txt")
-        paths = PathsSource(fs, sys.argv[2])
-        paths.filter(lambda x: check_manifest(x, manifest)).sink(
-            lambda x: upload(x, bucket, manifest)
-        )
-        paths.start()
-    elif sys.argv[1] == "process":
-        fs = fsspec.filesystem("s3")
-        paths = PathsSource(fs, "s3://tmf-video-data/test/*.asf")
-        manifest = os.path.join(bucket, "processed.txt")
-        paths.filter(lambda x: check_manifest(x, manifest)).sink(
-            lambda x: process(x, manifest)
-        )
-        paths.start()
+def do_upload(args):
+    """
+    Run the uploading pipeline.
+    """
+    # TODO: don't assume only local here
+    fs = fsspec.filesystem("file", use_listings_cache=False)
+    manifest = os.path.join(args.dest, "uploaded.txt")
+    paths = PathsSource(fs, args.glob)
+    paths.filter(lambda x: check_manifest(x, manifest)).sink(
+        lambda x: upload(x, args.dest, manifest)
+    )
+    paths.start()
 
     tornado.ioloop.IOLoop().start()
+
+
+def do_process(args):
+    """
+    Run the processing pipeline.
+    """
+    # TODO: don't assume only s3 here.
+    fs = fsspec.filesystem("s3")
+    paths = PathsSource(fs, args.src)
+    manifest = os.path.join(os.path.dirname(args.src), "processed.txt")
+    paths.filter(lambda x: check_manifest(x, manifest)).sink(
+        lambda x: process(x, manifest)
+    )
+    paths.start()
+
+    tornado.ioloop.IOLoop().start()
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers()
+
+    upload_parser = subparsers.add_parser("upload")
+    upload_parser.add_argument(
+        "glob", type=str, help="A glob pattern matching videos to upload",
+    )
+    upload_parser.add_argument(
+        "dest", type=str, help="A destination to upload the videos to",
+    )
+    upload_parser.set_defaults(func=do_upload)
+
+    process_parser = subparsers.add_parser("process")
+    process_parser.add_argument(
+        "src", type=str, help="The source location for videos to process",
+    )
+    process_parser.set_defaults(func=do_process)
+
+    args = parser.parse_args()
+    args.func(args)

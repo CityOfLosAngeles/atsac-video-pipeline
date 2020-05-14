@@ -28,11 +28,12 @@ On the processing side, this should be the same environment as the walk/bike alg
 
 On the upload side, run
 ```bash
-python pipeline.py upload /path/to/files
+python pipeline.py upload "/path/to/files" "s3://path/to/bucket"
 ```
 where `path/to/files` is a glob path that matches the files on the shared drive.
 
 On the processing side, run
 ```bash
-python pipeline.py process
+python pipeline.py process "s3://path/to/files"
 ```
+where "s3://path/to/files" is a glob that matches the files in cloud storage.
